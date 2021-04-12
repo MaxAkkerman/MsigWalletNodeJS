@@ -1,5 +1,6 @@
 const { libNode } = require("@tonclient/lib-node");
 const { Account } = require("@tonclient/appkit");
+const { ResponseType } = require("@tonclient/core/dist/bin");
 const {
     signerKeys,
     TonClient,
@@ -15,7 +16,7 @@ const DappServer = "net.ton.dev"
 const _db = require('./mongoDB.js')
 const client = new TonClient({ network: { endpoints: [DappServer] } });
 
-// TonClient.useBinaryLibrary(libNode);
+
 function UserException(message) {
     this.message = message;
     this.name = "UserExeption";
@@ -55,9 +56,7 @@ let deployWallet = async function(val) {
                 reqConfirms: 0,
             },
         });
-        console.log("responce",response)
         if(!response){
-            console.log("response",response)
             throw new UserException(`Something wrong with deploying`);
         }
 
@@ -67,7 +66,6 @@ let deployWallet = async function(val) {
     }
 };
 let getBalance = async function(address) {
-    // const client = new TonClient({ network: { endpoints: [DappServer] } });
     try {
         console.log("address data", address);
         const batchQueryResult = (await client.net.batch_query({
@@ -84,14 +82,12 @@ let getBalance = async function(address) {
                 }],
         })).results;
         if(!batchQueryResult[0][0]){
-            console.log("no such client")
-            throw new UserException(`Такого аккаунта не существует`);
+            throw new UserException("no such client");
         }else {
             let yourNumber = parseInt(batchQueryResult[0][0].balance, 16);
             console.log("Balance of wallet 1 is " + yourNumber + " grams");
             return {"address": address, "balance": yourNumber}
         }
-
     } catch (error) {
         console.error(error);
         throw [error.name, error.message]
@@ -110,7 +106,6 @@ async function sendMoney(acc, toAddress, amount) {
 let transfer = async function(val) {
     let recipient = val[2];
     let amount = val[3];
-    console.log("vallllly", val)
     const client = new TonClient({
         network: {
             endpoints: [DappServer],
@@ -154,8 +149,6 @@ let prepareWalletData = async function(msigImage) {
         throw new UserException("no msig image");
     }
     const msigWallet = msigImage.data;
-
-    // const client = new TonClient({ network: { endpoints: [DappServer] } });
     try {
 
         const { crypto } = client;
@@ -178,10 +171,10 @@ let prepareWalletData = async function(msigImage) {
         }
         const acc = new Account(msigWallet, { signer: signerKeys(keyPair), client });
         let addressGen = await acc.getAddress()
-        console.log(`Here is the future address of your contract ${addressGen}. Please save the keys. You will need them later to work with your multisig wallet.`);
+        console.log(`Here is the future address of your contract ${addressGen}.`);
         let data = [];
         let now = new Date()
-        data.push({"deployStatus":false,"address":addressGen, "seedPhrase":JSON.stringify(phrase), "keys":JSON.stringify(keyPair), subscribe:true, transactions:[], "createAt":now});
+        data.push({"deployStatus":false,"address":addressGen, "seedPhrase":JSON.stringify(phrase), "keys":JSON.stringify(keyPair), "subscribe":true, "transactions":[], "createAt":now});
 
         return data
 
@@ -189,29 +182,42 @@ let prepareWalletData = async function(msigImage) {
         throw [error.name, error.message]
     }
 };
-let subscribe = async function(address) {
-    // const client = new TonClient({ network: { endpoints: [DappServer] } });
-    try {
-        const subscriptionAccountHandle = (await client.net.subscribe_collection({
-            collection: "messages",
-            filter: {
-                dst: { eq: address }
-                },
-            result: "id",
-        }, async (d) => {
-            console.log(">>> Account subscription triggered ", await d);
-            // getCurMsgData(d.result.id)
-        })).handle;
-    } catch (error) {
-        console.error("subscribition error");
-        return error
 
-    }
-    return {"status":"success"}
+
+
+let subscribe = async function(address) {
+    let subscribeID = (await client.net.subscribe_collection({
+                collection: "messages",
+                filter: {
+                    dst: { eq: address }
+                    },
+                result: "id",
+
+            }, async (d,responseType) => {
+                if (responseType === ResponseType.Custom) {
+                    console.log(">>> Account subscription triggered ", d.result.id);
+                    let caseID = checkMessagesAmount(d.result.id)
+                    if(caseID){
+                        checkerArr = [];
+                        await getCurMsgData(caseID)
+                    }
+                }
+            })).handle;
+        await _db.saveSubscribeID({"subID":subscribeID,"address":address})
+        return {"status":"success", "subscribed address": address}
 };
+let checkerArr = [];
+let checkMessagesAmount = function(messageID){
+    checkerArr.push(messageID)
+    if(checkerArr.length === 2){
+        if(checkerArr[0] === checkerArr[1]){
+            return checkerArr[0]
+        }
+    }
+    return false
+}
 
 let getCurMsgData = async function(id) {
-    // const client = new TonClient({ network: { endpoints: [DappServer] } });
     const batchQueryResult1 = (await client.net.batch_query({
         "operations": [
             {
@@ -242,19 +248,30 @@ let getCurMsgData = async function(id) {
                     }
                 },
                 result: 'dst'
-            }]
+            },
+            {
+                type: 'QueryCollection',
+                collection: 'messages',
+                filter: {
+                    id: {
+                        eq: id
+                    }
+                },
+                result: 'created_at'
+            },
+        ]
     })).results;
     let value = parseInt(batchQueryResult1[1][0].value, 16)
-    let transData = {"src": batchQueryResult1[0][0].src, "dst":batchQueryResult1[2][0].dst, "value":value}
-    let ret = await _db.updateTransactions(transData)
-
-    console.log("ret", ret)
-    console.log("Balance DST " + batchQueryResult1[0][0].src);
-    console.log("Balance SRC " + batchQueryResult1[2][0].dst);
-    console.log("Balance VALUE " + parseInt(batchQueryResult1[1][0].value, 16) + '\n');
+    let transData = {"src": batchQueryResult1[0][0].src, "dst":batchQueryResult1[2][0].dst, "value":value, "createdAt":batchQueryResult1[3][0].created_at}
+    let result = await _db.updateTransactions(transData)
 }
-
+let unsubscribe = async function(address) {
+    let userData = await _db.unsubAtdb(address)
+    await client.net.unsubscribe({ handle: userData.subscribeID });
+    return {"status":"success", "subscribed address": address}
+};
 module.exports = {
+    unsubscribe:unsubscribe,
     subscribe: subscribe,
     prepareWalletData: prepareWalletData,
     transfer: transfer,

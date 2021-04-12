@@ -25,20 +25,23 @@ app.get('/getBalance/:address', jsonParser, (req, res) => {
         .then(balanceData => res.send(balanceData))
         .catch(error => res.send(error));
 })
-
 app.post('/transfer', jsonParser, (req, res) => {
     let body = req.body.data
     let p1 = _db.getMsigWallet()
     let p2 = _db.getUserByAddress({"address": body[0].from})
-    // console.log("p1", p1, "p2", p2)
     Promise.all([p1, p2, body[0].to, body[0].amount])
         .then(values => {
             sdk.transfer(values)
                 .then(result => res.send(result))
         }).catch(error => res.send(error));
 })
-app.get('/subscribe', jsonParser, (req, res) => {
-    sdk.subscribe("0:3b7c772c81ebb6536525a0dbc5134dc8cdab1dca84ad28e57066a625ede1aae7")
+app.post('/subscribe', jsonParser, (req, res) => {
+    sdk.subscribe(req.body.address)
+        .then(result => res.send(result))
+        .catch(error => res.send(error));
+})
+app.post('/unsubscribe', jsonParser, (req, res) => {
+    sdk.unsubscribe(req.body.address)
         .then(result => res.send(result))
         .catch(error => res.send(error));
 })
